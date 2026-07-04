@@ -1,126 +1,318 @@
 # FIFA 2026 AI Knockout Predictor + Sponsor Stock Impact Monitor
 
-A fully local Python dashboard that
+A local Flask dashboard that:
 
-1. draws the **FIFA World Cup 2026 knockout bracket** (Round of 32 → Final),
-2. predicts **win/advance probabilities** for every not-yet-played knockout match using
-   only tournament data (results, goals, possession, shots, passing, discipline, player stats),
-3. runs a **10,000-run Monte Carlo simulation** of the remaining bracket, and
-4. monitors **FIFA sponsor stocks** (Adidas, Coca-Cola, Visa, …) since kickoff
-   (2026-06-11) with an **experimental 7-day forecast** that mixes market features
-   with World-Cup signals (stage intensity, match days, upsets, sponsor exposure).
+1. renders the FIFA World Cup 2026 knockout bracket from the Round of 32 to the final;
+2. predicts advance probabilities only for matches that have not been played;
+3. runs 10,000 Monte Carlo simulations of the remaining bracket; and
+4. produces an experimental seven-trading-day forecast for selected sponsor stocks.
 
-No Docker, no Streamlit, no cloud — Flask + vanilla HTML/CSS/JS on localhost.
+The dashboard uses Flask, vanilla HTML/CSS/JavaScript, scikit-learn, pandas, and
+Yahoo Finance data through `yfinance`.
 
----
+> This project is an educational modelling demonstration. Its football
+> probabilities are not betting advice, and its stock forecasts are not
+> financial advice.
 
 ## Installation
 
-Requires **Python 3.11+**.
+Python 3.11 or newer is recommended.
 
 ```bash
 pip install -r requirements.txt
 python app.py
 ```
 
-Open **http://localhost:5000**.
+Open [http://localhost:5000](http://localhost:5000).
 
-The sample data files are pre-generated and committed; regenerate them any time with:
+The committed JSON files can be regenerated with:
 
 ```bash
 python data/sample/generate_sample_data.py
 ```
 
+Run the regression suite with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Project structure
 
-```
+```text
 fifa_2026_ai_knockout_stock_dashboard/
-├── app.py                      # Flask app + all API routes
-├── requirements.txt
-├── data/
-│   ├── raw/                    # cached yfinance downloads (CSV, auto-created)
-│   ├── processed/              # reserved for future feature exports
-│   └── sample/                 # sample tournament data + its generator
-├── models/
-│   ├── feature_engineering.py  # attack/defense/form/discipline/player-impact scores
-│   ├── football_model.py       # Poisson xG + logistic blend, penalty model
-│   ├── bracket_simulator.py    # 10,000-run Monte Carlo of the remaining bracket
-│   └── stock_model.py          # GradientBoosting stock forecaster + football signals
-├── services/
-│   ├── fifa_data_service.py    # data access (sample JSON now, real API later)
-│   ├── stock_data_service.py   # yfinance + CSV cache + demo fallback
-│   └── sponsor_service.py      # sponsor catalogue & exposure scores
-├── static/css/style.css        # dark glassmorphism theme
-├── static/js/dashboard.js      # bracket renderer, modals, Plotly stock chart
-└── templates/index.html
+|-- app.py                         Flask application and API routes
+|-- data/
+|   |-- raw/                       Cached stock-price CSV files
+|   |-- processed/                 Reserved for generated feature exports
+|   `-- sample/                    Tournament JSON files and generator
+|-- models/
+|   |-- feature_engineering.py     Team-level football features
+|   |-- football_model.py          Match probability model
+|   |-- bracket_simulator.py       Monte Carlo bracket simulation
+|   `-- stock_model.py             Football-aware stock forecast
+|-- services/
+|   |-- fifa_data_service.py       Tournament data access
+|   |-- stock_data_service.py      yfinance access, cache, and fallback
+|   `-- sponsor_service.py         Sponsor catalogue and exposure scores
+|-- static/css/style.css           Dashboard layout and theme
+|-- static/js/dashboard.js         Bracket and chart rendering
+|-- templates/index.html           Main dashboard template
+`-- tests/                          Regression tests
 ```
 
 ## API routes
 
-| Route                    | Purpose                                             |
-|--------------------------|-----------------------------------------------------|
-| `GET /`                  | dashboard page                                      |
-| `GET /api/bracket`       | bracket, match predictions, Monte Carlo summary     |
-| `GET /api/team/<name>`   | team profile: scores, ranks, players, advancement   |
-| `GET /api/stocks`        | sponsor list                                        |
-| `GET /api/stock/<ticker>`| price history + 7-day forecast + confidence band    |
-| `GET /api/recalculate`   | drop caches, rebuild features, re-simulate          |
+| Route | Purpose |
+|---|---|
+| `GET /` | Render the dashboard |
+| `GET /api/bracket` | Return fixtures, match probabilities, and tournament simulation |
+| `GET /api/team/<name>` | Return team features, players, ranks, and advancement probabilities |
+| `GET /api/stocks` | Return the configured sponsor catalogue |
+| `GET /api/stock/<ticker>` | Return price history and the seven-day forecast |
+| `GET /api/recalculate` | Clear cached state and rerun all calculations |
 
-## How the football model works
+## Why the football prediction model is designed this way
 
-1. **Feature engineering** (`models/feature_engineering.py`) — five 0–100 scores per
-   team, min-max normalized across the 32 knockout teams:
-   * *Attack* = goals/match ·0.35 + shots ·0.20 + shots on target ·0.25 + possession ·0.10 + passing ·0.10
-   * *Defense* = clean sheets ·0.25 + inverse conceded ·0.35 + tackles/interceptions ·0.15 + GK/DF contribution ·0.15 + discipline ·0.10
-   * *Discipline* = inverse of fouls + 3·yellows + 12·reds (per match)
-   * *Form* = recency-weighted W/D/L + group points + goal difference
-   * *Player impact* = key-player goals/assists/per-90/minutes, minus card penalty
-2. **Match probability** (`models/football_model.py`) —
-   `xG_A = 1.30 · attack_A / defense_B` feeds a full Poisson score grid
-   (win/draw/loss over 90'), blended 55/45 with a logistic curve over the overall
-   strength difference. Knockout draws are resolved by a penalty-shootout model that
-   is 70% coin flip, 30% strength-tilted.
-3. **Monte Carlo** (`models/bracket_simulator.py`) — simulates all remaining matches
-   10,000× and reports each team's probability of reaching the QF/SF/Final and
-   winning the title, plus most-likely participants for TBD matches.
+World Cup knockout data is small: each team has only a few tournament matches.
+A large black-box model would overfit that sample and produce probabilities that
+look precise without being reliable. The project therefore combines two
+interpretable statistical views:
 
-## How the stock model works (experimental!)
+- a Poisson expected-goals model, which represents football scoring explicitly;
+- a logistic strength model, which stabilizes the estimate when recent scorelines
+  are noisy.
 
-* History via **yfinance** from 2026-06-11 to today, cached in `data/raw/` for 4h.
-* If the download fails (offline/rate-limited) a deterministic synthetic series is
-  generated and the UI shows a **DEMO DATA** badge instead of the blue REAL badge.
-* Features: daily returns, 3/5-day MAs, rolling volatility, momentum, trend, plus
-  football signals per date — stage intensity (group=1 … final=6), match-day flag,
-  knockout games played, upset score, fan-attention proxy, sponsor exposure
-  (boosted while brand-related teams are alive).
-* A `GradientBoostingRegressor` predicts next-day returns, rolled forward 7 trading
-  days; the band is ±1.28σ of training residuals (~80%).
-* With ~3 weeks of prices the model auto-falls back to drift+volatility when there
-  are fewer than 8 training rows.
+The blend gives a probability that can be explained through attack, defense,
+form, discipline, and player contributions. Monte Carlo simulation then handles
+the uncertainty created by future opponents and later bracket rounds.
 
-**This is a modelling demo, not financial advice.**
+## FIFA data used by the model
+
+The application reads three files through `FifaDataService`:
+
+- `data/sample/matches.json`: dates, rounds, teams, scores, penalties, winners,
+  bracket dependencies, and match status;
+- `data/sample/teams.json`: matches played, wins/draws/losses, goals, group
+  points, possession, shots, passing, cards, clean sheets, tackles,
+  interceptions, saves, and recent results;
+- `data/sample/players.json`: position, appearances, minutes, goals, assists,
+  cards, defensive actions, saves, and rating for selected players.
+
+Completed Round-of-32 fixtures use the recorded tournament results. The current
+team and player performance fields are deterministic estimates generated by
+`data/sample/generate_sample_data.py`; they should be replaced by a licensed
+statistics feed before treating the probabilities as production output.
+
+Match status is part of the model contract:
+
+- `completed`: preserve the recorded winner and never generate a prediction;
+- `upcoming`: both participants are known, so expose a direct match prediction;
+- `scheduled`: participants depend on earlier matches, so expose simulated slot
+  candidates instead of pretending the teams are known.
+
+This prevents already-played games from being overwritten by the model.
+
+## Football feature engineering
+
+`TeamFeatureEngineer` min-max normalizes every input across the 32 knockout
+teams. A score of 100 means best in this tournament dataset, not best in
+football generally.
+
+The five component scores are:
+
+- **Attack**: goals per match 35%, shots 20%, shots on target 25%,
+  possession 10%, and passing accuracy 10%.
+- **Defense**: clean-sheet rate 25%, inverse goals conceded 35%,
+  tackles/interceptions 15%, goalkeeper/defender contribution 15%, and
+  discipline 10%.
+- **Discipline**: inverse of fouls plus three times yellow cards and twelve
+  times red cards per match.
+- **Form**: recency-weighted results 45%, group points 30%, and goal difference
+  per match 25%. Newer results receive exponentially greater weight.
+- **Player impact**: goals, assists, per-90 output, minutes/availability, and
+  defensive contribution, minus card penalties.
+
+Overall strength combines those components using:
+
+| Component | Weight |
+|---|---:|
+| Attack | 30% |
+| Defense | 28% |
+| Player impact | 20% |
+| Form | 15% |
+| Discipline | 7% |
+
+## Match probabilities and bracket simulation
+
+For teams A and B, the model calculates expected goals:
+
+```text
+xG_A = 1.30 * (attack_A + 45) / (defense_B + 45)
+xG_B = 1.30 * (attack_B + 45) / (defense_A + 45)
+```
+
+Each xG value is constrained to 0.25-3.60. A Poisson grid covering scores from
+0 through 9 goals produces 90-minute win, draw, and loss probabilities.
+
+A second probability comes from the overall-strength difference:
+
+```text
+P(A beats B) = 1 / (1 + exp(-0.060 * (overall_A - overall_B)))
+```
+
+The final two-way estimate is 55% Poisson and 45% logistic. The Poisson draw
+probability is retained. For a knockout draw, the advancement probability is
+mostly a 50/50 outcome with a 30% tilt toward the stronger team.
+
+`BracketSimulator` runs the remaining tournament 10,000 times with a fixed
+seed. Every completed result is locked. Each unplayed match samples a winner
+from the model probability, and that winner advances through the correct
+bracket dependency. The output includes:
+
+- probability of reaching each later round;
+- probability of winning the tournament;
+- likely participants in matches whose teams are still unknown;
+- a single most-likely projected path for highlighting the diagram.
+
+## Why football data is included in the stock forecast
+
+The stock model tests a narrow hypothesis: tournament activity can act as a
+short-lived attention and exposure signal for public companies connected to
+the event. For example, a sponsor may receive more visibility on match days or
+while a related national team remains active.
+
+Football data does not replace market data. It is added as a small contextual
+feature set beside returns, momentum, and volatility. The model demonstrates
+how an event stream can be joined to a financial time series by calendar date;
+it does not establish that World Cup events cause stock-price movements.
+
+## Stock data and features
+
+`StockDataService` requests adjusted daily closing prices from Yahoo Finance
+from 2026-06-11 through the current date. Downloads are cached in `data/raw/`
+for four hours. If the download fails or returns fewer than five rows, the
+service creates a deterministic demo series and labels it `demo` in the API.
+
+For each trading day, `StockPredictor` creates six market features:
+
+- daily percentage return;
+- three-day moving-average deviation from the current close;
+- five-day moving-average deviation from the current close;
+- three-day rolling return volatility;
+- three-day price momentum;
+- cumulative trend since the start of the data window.
+
+`FootballSignalBuilder` joins seven tournament features by date:
+
+- stage intensity: group 1, R32 2, R16 3, QF 4, SF 5, final 6;
+- whether the date is a match day;
+- number of knockout matches on that date;
+- number of completed knockout matches by that date;
+- manually configured upset magnitude for that date;
+- fan-attention proxy: stage intensity multiplied by match count;
+- sponsor exposure.
+
+Each sponsor has a base exposure score from 0 to 1. A sponsor receives an
+additional 0.05 for each configured related team still alive, capped at 1.0.
+The daily football feature then multiplies that score by
+`1 + 0.15 * stage_intensity`.
+
+## Stock prediction model
+
+The prediction target is the next trading day's return. With at least eight
+complete training rows, the application fits a
+`GradientBoostingRegressor` configured with:
+
+| Parameter | Value |
+|---|---:|
+| Estimators | 120 |
+| Maximum tree depth | 2 |
+| Learning rate | 0.05 |
+| Subsample | 0.90 |
+| Random seed | 7 |
+
+Gradient boosting was chosen because it can model nonlinear interactions
+between a small number of market and event features without requiring feature
+scaling. Shallow trees and a low learning rate constrain complexity, but the
+available sample is still too small for a production financial model.
+
+To reduce overfitting, the predicted return is shrunk toward the historical
+mean return. The model weight grows from `training_rows / 40` to a maximum of
+1. Daily predicted moves are clipped to +/-2.5%.
+
+The model recursively forecasts seven business days:
+
+1. predict the next-day return;
+2. convert it to the next predicted close;
+3. append that close to the working history;
+4. recompute rolling market features;
+5. repeat for the next business day.
+
+If fewer than eight training rows are available, the application uses mean
+historical drift instead of fitting the regressor.
+
+The displayed uncertainty band is:
+
+```text
+predicted price +/- 1.28 * residual_std * sqrt(horizon) * last_close
+```
+
+This is an approximate 80% residual cone, not a calibrated market-risk
+interval.
+
+## End-to-end data flow
+
+```text
+FIFA match/team/player JSON
+        |
+        +--> team feature engineering
+        |        |
+        |        +--> Poisson + logistic match probabilities
+        |                    |
+        |                    +--> 10,000-run bracket simulation
+        |
+        +--> date-level football signals --------+
+                                                  |
+Yahoo Finance adjusted closes --> market features +--> Gradient boosting
+                                                       |
+                                                       +--> 7-day forecast
+```
+
+The football and stock models are related through date-level tournament
+signals only. A team's predicted match result does not directly force a stock
+price up or down.
 
 ## Limitations
 
-* Tournament data is **synthetic sample data** (deterministic, seeded) shaped like
-  the real thing; the bracket state pretends today is 2026-07-04 (Round of 16).
-* Tiny samples everywhere: 3–4 matches per team, ~15 trading days per stock.
-  Confidence values are deliberately modest.
-* yfinance is unofficial and can rate-limit; the app degrades to demo data.
-* One-off penalties/red cards/injuries are not modelled.
+- Completed knockout results are real, but current team/player feature values
+  are generated estimates rather than a live licensed statistics feed.
+- Football features are normalized relative to the current 32-team dataset,
+  so values change when the comparison population changes.
+- The stock training window contains only a few weeks of observations.
+- Sponsor exposure and upset magnitude are manually configured proxies.
+- No broad market index, sector return, currency factor, earnings event, or
+  intraday information is included.
+- Yahoo Finance access is unofficial and may be unavailable or rate-limited.
+- Injuries, starting lineups, red-card timing, travel, and betting-market odds
+  are not modelled.
+- Correlation in this demonstration must not be interpreted as causation.
 
-## Replacing sample FIFA data with real data
+## Updating FIFA results
 
-The schema contract lives in `data/sample/generate_sample_data.py`.
+The schema contract is defined in `data/sample/generate_sample_data.py`.
 
-* **Easiest:** overwrite `data/sample/teams.json`, `players.json`, `matches.json`
-  with real exports in the same shape, then hit **Recalculate** in the UI
-  (or `GET /api/recalculate`).
-* **Cleaner:** implement `fetch_live_teams/players/matches()` in
-  `services/fifa_data_service.py` against your football API of choice
-  (e.g. api-football, SportMonks, a FIFA scraper) and set `USE_LIVE_DATA = True`.
-  Everything downstream — features, predictions, simulation, UI — is unchanged.
+When a match finishes:
 
-As real knockout results come in, set each match's `status` to `"completed"`,
-fill `home_score`/`away_score`/`penalties`/`winner`, and the simulator
-automatically locks those results and re-simulates only the remaining games.
+1. set its `status` to `"completed"`;
+2. fill `home_score`, `away_score`, `penalties`, and `winner`;
+3. resolve the teams in the next bracket match;
+4. update team/player statistics if a real statistics source is available;
+5. call `GET /api/recalculate` or restart the application.
+
+The simulator will lock the completed result and predict only the remaining
+fixtures.
+
+For live data, implement `fetch_live_teams`, `fetch_live_players`, and
+`fetch_live_matches` in `services/fifa_data_service.py`, then set
+`USE_LIVE_DATA = True`.

@@ -19,91 +19,167 @@
     <button id="btn-recalc" class="btn-accent" title="Re-run feature engineering + 10,000 simulations">&#8635; Recalculate</button>
   </header>
 
-  <!-- ================= KNOCKOUT BRACKET ================= -->
-  <section class="panel" id="bracket-section">
-    <div class="section-head">
-      <h2>Knockout Bracket</h2>
-      <div class="legend">
-        <span><i class="dot dot-done"></i>Completed</span>
-        <span><i class="dot dot-up"></i>Upcoming (predicted)</span>
-        <span><i class="dot dot-tbd"></i>Participants TBD</span>
-        <span><i class="dot dot-path"></i>Projected champion's path</span>
-      </div>
-    </div>
-    <div class="bracket-scroll">
-      <div class="bracket" id="bracket">
-        <!-- columns injected by dashboard.js -->
-      </div>
-    </div>
-    <p class="hint">Click any match card for model details. Click a team name inside the details view for its full profile.</p>
-  </section>
+  <div class="dashboard-shell">
+    <main class="dashboard-main">
 
-  <!-- ================= MODEL EXPLANATION ================= -->
-  <section class="panel" id="model-section">
-    <div class="section-head"><h2>How the Football Model Works</h2></div>
-    <div class="model-grid">
-      <div class="glass mini">
-        <h3>&#9876; Attack Index</h3>
-        <p>Goals per match (35%), shots (20%), shots on target (25%), possession (10%) and passing accuracy (10%), each normalized across the 32 knockout teams.</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#128737; Defense Index</h3>
-        <p>Clean sheets (25%), inverse goals conceded (35%), tackles &amp; interceptions (15%), goalkeeper/defender contribution (15%) and discipline (10%).</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#11088; Player Impact Index</h3>
-        <p>Key-player goals, assists, per-90 contribution, minutes and availability, with a penalty for yellow/red cards.</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#128200; Momentum / Form Index</h3>
-        <p>Recency-weighted results (newest match counts most), group points and goal difference per match.</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#129355; Discipline Index</h3>
-        <p>Fewer fouls, yellow and red cards raise the score. Red cards are weighted hardest.</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#127922; Match Probability</h3>
-        <p>Poisson expected goals (<code>xG<sub>A</sub> = base &times; attack<sub>A</sub> / defense<sub>B</sub></code>) converted to win/draw/loss via a full score grid, blended with a logistic strength curve. Knockout draws are resolved by a penalty model tilted 30% toward the stronger side.</p>
-      </div>
-    </div>
-    <div class="glass" id="title-race">
-      <h3>&#127942; Title Race &mdash; <span id="sims-label">10,000</span> Monte Carlo simulations</h3>
-      <div id="title-table"></div>
-    </div>
-  </section>
+      <!-- ================= KNOCKOUT BRACKET ================= -->
+      <section class="panel" id="bracket-section">
+        <div class="section-head">
+          <h2>Knockout Bracket</h2>
+          <div class="legend">
+            <span><i class="dot dot-done"></i>Completed</span>
+            <span><i class="dot dot-up"></i>Upcoming (predicted)</span>
+            <span><i class="dot dot-tbd"></i>Participants TBD</span>
+            <span><i class="dot dot-path"></i>Projected champion's path</span>
+          </div>
+        </div>
+        <div id="active-football-model" class="active-model-chip">Football model: loading…</div>
+        <div class="bracket-scroll" tabindex="0" aria-label="Scrollable FIFA 2026 knockout bracket">
+          <div class="bracket" id="bracket" aria-label="FIFA 2026 knockout tournament tree">
+            <!-- columns injected by dashboard.js -->
+          </div>
+        </div>
+        <p class="hint">Click any match card for model details. Click a team name inside the details view for its full profile.</p>
+      </section>
 
-  <!-- ================= SPONSOR STOCKS ================= -->
-  <section class="panel" id="stock-section">
-    <div class="section-head">
-      <h2>Sponsor Stock Monitor</h2>
-      <div class="stock-controls">
-        <label for="stock-select">Sponsor:</label>
-        <select id="stock-select"></select>
+      <!-- ================= MODEL EXPLANATION ================= -->
+      <section class="panel" id="model-section">
+        <div class="section-head"><h2>How the Football Model Works</h2></div>
+        <div class="model-grid">
+          <div class="glass mini">
+            <h3>&#9876; Attack Index</h3>
+            <p>Goals per match (35%), shots (20%), shots on target (25%), possession (10%) and passing accuracy (10%), each normalized across the 32 knockout teams.</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#128737; Defense Index</h3>
+            <p>Clean sheets (25%), inverse goals conceded (35%), tackles &amp; interceptions (15%), goalkeeper/defender contribution (15%) and discipline (10%).</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#11088; Player Impact Index</h3>
+            <p>Key-player goals, assists, per-90 contribution, minutes and availability, with a penalty for yellow/red cards.</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#128200; Momentum / Form Index</h3>
+            <p>Recency-weighted results (newest match counts most), group points and goal difference per match.</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#129355; Discipline Index</h3>
+            <p>Fewer fouls, yellow and red cards raise the score. Red cards are weighted hardest.</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#127922; Match Probability</h3>
+            <p>Poisson expected goals (<code>xG<sub>A</sub> = base &times; attack<sub>A</sub> / defense<sub>B</sub></code>) converted to win/draw/loss via a full score grid, blended with a logistic strength curve. Knockout draws are resolved by a penalty model tilted 30% toward the stronger side.</p>
+          </div>
+        </div>
+        <div class="glass" id="title-race">
+          <h3>&#127942; Title Race &mdash; <span id="sims-label">10,000</span> Monte Carlo simulations</h3>
+          <div id="title-table"></div>
+        </div>
+      </section>
+
+      <!-- ================= SPONSOR STOCKS ================= -->
+      <section class="panel" id="stock-section">
+        <div class="section-head">
+          <h2>Sponsor Stock Monitor</h2>
+        </div>
+        <div id="active-stock-model" class="active-model-chip">Stock model: loading…</div>
+        <div class="stock-chips" id="stock-chips"></div>
+        <div class="glass chart-wrap">
+          <div id="stock-chart" class="stock-chart"><div class="loading">Select a sponsor&hellip;</div></div>
+        </div>
+        <div class="model-grid">
+          <div class="glass mini">
+            <h3>&#9917; Football Signals</h3>
+            <p>Tournament stage intensity, match-day flags, knockout games played, upset magnitude, a global fan-attention proxy and a sponsor exposure score boosted while brand-related teams stay alive.</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#128202; Market Features</h3>
+            <p>Daily returns, 3/5-day moving averages, rolling volatility, momentum and the cumulative trend since the tournament started (2026-06-11).</p>
+          </div>
+          <div class="glass mini">
+            <h3>&#129302; Forecast Method</h3>
+            <p>A GradientBoostingRegressor predicts next-day returns and is rolled forward 7 trading days. The shaded band is a &plusmn;1.28&sigma; residual cone. With only ~3 weeks of history this is a pipeline demo, <strong>not financial advice</strong>.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="dashboard-sidebar" aria-label="Dashboard navigation and model controls">
+      <div class="rail-brand">
+        <span class="rail-brand-mark" aria-hidden="true">26</span>
+        <div>
+          <strong>FIFA Predictor</strong>
+          <span>Model workspace</span>
+        </div>
       </div>
-    </div>
-    <div class="stock-chips" id="stock-chips"></div>
-    <div class="glass chart-wrap">
-      <div id="stock-chart" class="stock-chart"><div class="loading">Select a sponsor&hellip;</div></div>
-    </div>
-    <div class="model-grid">
-      <div class="glass mini">
-        <h3>&#9917; Football Signals</h3>
-        <p>Tournament stage intensity, match-day flags, knockout games played, upset score (e.g. Morocco beating Belgium), a global fan-attention proxy and a sponsor exposure score boosted while brand-related teams stay alive.</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#128202; Market Features</h3>
-        <p>Daily returns, 3/5-day moving averages, rolling volatility, momentum and the cumulative trend since the tournament started (2026-06-11).</p>
-      </div>
-      <div class="glass mini">
-        <h3>&#129302; Forecast Method</h3>
-        <p>A GradientBoostingRegressor predicts next-day returns and is rolled forward 7 trading days. The shaded band is a &plusmn;1.28&sigma; residual cone. With only ~3 weeks of history this is a pipeline demo, <strong>not financial advice</strong>.</p>
-      </div>
-    </div>
-  </section>
+      <nav class="rail-nav" aria-label="Dashboard sections">
+        <a href="#bracket-section"><span aria-hidden="true">&#9917;</span> Knockout bracket</a>
+        <a href="#model-section"><span aria-hidden="true">&#9881;</span> Model explanation</a>
+        <a href="#stock-section"><span aria-hidden="true">&#8599;</span> Sponsor stocks</a>
+      </nav>
+
+      <!-- ================= MODEL CONTROLS ================= -->
+      <section class="panel sidebar-panel" id="model-controls-section">
+        <div class="section-head">
+          <div>
+            <span class="rail-eyebrow">Prediction setup</span>
+            <h2>Model Controls</h2>
+          </div>
+          <div class="control-actions">
+            <button id="btn-predict" class="btn-accent" title="Train or load the selected models and refresh the dashboard">Predict</button>
+            <button id="btn-reset-defaults" class="btn-secondary" title="Reset to backend defaults">Reset to defaults</button>
+          </div>
+        </div>
+
+        <div class="progress-panel hidden" id="prediction-progress">
+          <div class="progress-track">
+            <div class="progress-fill" id="prediction-progress-fill"></div>
+          </div>
+          <div class="progress-meta">
+            <span id="prediction-progress-label">Waiting to start…</span>
+            <span id="prediction-progress-pct">0%</span>
+          </div>
+        </div>
+
+        <div class="controls-stack">
+          <div class="glass control-card">
+            <div class="control-card-head">
+              <div>
+                <h3>Football model</h3>
+                <p id="football-model-description" class="control-description">Loading model metadata…</p>
+              </div>
+              <div class="control-select-wrap">
+                <label for="football-model-select">Select</label>
+                <select id="football-model-select"></select>
+              </div>
+            </div>
+            <div id="football-params" class="param-grid"></div>
+          </div>
+
+          <div class="glass control-card">
+            <div class="control-card-head">
+              <div>
+                <h3>Stock model</h3>
+                <p id="stock-model-description" class="control-description">Loading model metadata…</p>
+              </div>
+              <div class="control-select-wrap">
+                <label for="stock-model-select">Select</label>
+                <select id="stock-model-select"></select>
+              </div>
+            </div>
+            <div id="stock-params" class="param-grid"></div>
+            <div class="control-inline">
+              <label for="stock-select">Sponsor stock</label>
+              <select id="stock-select"></select>
+            </div>
+          </div>
+        </div>
+      </section>
+    </aside>
+  </div>
 
   <footer>
-    <p>Sample tournament data (synthetic, deterministic) &middot; stock data via Yahoo Finance when reachable, otherwise clearly-flagged demo series.</p>
+    <p>Verified completed knockout results with deterministic team/player estimates &middot; stock data via Yahoo Finance when reachable, otherwise clearly flagged demo series.</p>
     <p><strong>Disclaimer:</strong> educational project. Nothing here is betting or financial advice.</p>
   </footer>
 

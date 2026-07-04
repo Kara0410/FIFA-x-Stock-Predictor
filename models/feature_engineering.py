@@ -12,6 +12,12 @@ tournament on this dimension", not an absolute measure.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
 
 def _minmax(values: dict[str, float]) -> dict[str, float]:
     """Min-max normalize a {team: value} dict to 0..1 (0.5 if constant)."""
@@ -152,3 +158,248 @@ class TeamFeatureEngineer:
         ps = sorted(self.players_by_team.get(team, []),
                     key=lambda p: -(p["goals"] * 4 + p["assists"] * 3 + p["rating"]))
         return ps[:k]
+
+
+# --------------------------------------------------------------------------- #
+# Model-ready feature builders
+# --------------------------------------------------------------------------- #
+def _team_row_from_teams_df(teams_df: pd.DataFrame, team: str) -> dict[str, Any]:
+    if teams_df.empty:
+        return {}
+    df = teams_df.copy()
+    if "team" in df.columns:
+        df = df.set_index("team")
+    elif "name" in df.columns:
+        df = df.set_index("name")
+    if team not in df.index:
+        return {}
+    row = df.loc[team]
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[0]
+    return row.to_dict()
+
+
+def _player_team_frame(players_df: pd.DataFrame) -> pd.DataFrame:
+    if players_df.empty:
+        return pd.DataFrame()
+    cols = [
+        "team", "goals", "assists", "minutes", "yellow_cards", "red_cards",
+        "tackles", "interceptions", "saves", "rating",
+    ]
+    frame = players_df.copy()
+    for col in cols:
+        if col not in frame.columns:
+            frame[col] = 0
+    agg = frame.groupby("team", as_index=True).agg(
+        player_goals=("goals", "sum"),
+        player_assists=("assists", "sum"),
+        player_minutes=("minutes", "sum"),
+        player_yellow_cards=("yellow_cards", "sum"),
+        player_red_cards=("red_cards", "sum"),
+        player_tackles=("tackles", "sum"),
+        player_interceptions=("interceptions", "sum"),
+        player_saves=("saves", "sum"),
+        player_rating=("rating", "mean"),
+        player_count=("team", "size"),
+    )
+    agg["top3_player_share"] = frame.sort_values(["team", "rating"], ascending=[True, False]) \
+        .groupby("team")["rating"].head(3).groupby(level=0).sum()
+    return agg.fillna(0.0)
+
+
+def build_football_team_frame(matches_df: pd.DataFrame, teams_df: pd.DataFrame, players_df: pd.DataFrame) -> pd.DataFrame:
+    """Build leakage-safe per-team snapshots keyed by match date.
+
+    The returned frame uses only information known before the current match.
+    It is intentionally lightweight because the sample corpus is small; the
+    goal is to provide stable, model-ready rows rather than a full event log.
+    """
+    if matches_df.empty or teams_df.empty:
+        return pd.DataFrame()
+
+    matches = matches_df.copy()
+    matches["date"] = pd.to_datetime(matches["date"])
+    matches = matches.sort_values(["date", "id"]).reset_index(drop=True)
+    player_agg = _player_team_frame(players_df)
+
+    team_names = list(teams_df["team"] if "team" in teams_df.columns else teams_df["name"])
+    state: dict[str, dict[str, Any]] = {
+        team: {
+            "games": 0,
+            "goals_for_roll": 0.0,
+            "goals_against_roll": 0.0,
+            "points_roll": 0.0,
+            "minutes_roll": 0.0,
+            "last_date": None,
+            "recent_results": [],
+        }
+        for team in team_names
+    }
+
+    rows: list[dict[str, Any]] = []
+    for _, match in matches.iterrows():
+        if match.get("status") != "completed":
+            continue
+        home = match.get("home")
+        away = match.get("away")
+        if not home or not away:
+            continue
+        for side, team, opp in (("home", home, away), ("away", away, home)):
+            team_row = _team_row_from_teams_df(teams_df, team)
+            opp_row = _team_row_from_teams_df(teams_df, opp)
+            if not team_row or not opp_row:
+                continue
+            team_state = state[team]
+            opp_state = state[opp]
+            recent = team_state["recent_results"][-5:]
+            result_score = {"W": 1.0, "D": 0.5, "L": 0.0}
+            rows.append({
+                "match_id": match["id"],
+                "date": match["date"],
+                "team": team,
+                "opponent": opp,
+                "side": side,
+                "matches_played_before": team_state["games"],
+                "rest_days": float((match["date"] - pd.Timestamp(team_state["last_date"])).days) if team_state["last_date"] is not None else 7.0,
+                "rolling_points": team_state["points_roll"],
+                "rolling_goal_diff": team_state["goals_for_roll"] - team_state["goals_against_roll"],
+                "recent_form": float(np.mean([result_score[r] for r in recent])) if recent else 0.5,
+                "cumulative_minutes": team_state["minutes_roll"],
+                "player_minutes": float(player_agg.loc[team, "player_minutes"]) if team in player_agg.index else 0.0,
+                "player_count": float(player_agg.loc[team, "player_count"]) if team in player_agg.index else 0.0,
+                "top3_player_share": float(player_agg.loc[team, "top3_player_share"]) if team in player_agg.index else 0.0,
+                "attack": float(team_row.get("shots_on_target_per_match", 0.0)),
+                "defense": float(team_row.get("clean_sheets", 0.0)),
+                "discipline": float(team_row.get("yellow_cards", 0.0) + team_row.get("red_cards", 0.0)),
+                "form": float(team_row.get("group_points", 0.0)),
+                "player_impact": float(player_agg.loc[team, "player_rating"]) if team in player_agg.index else 0.0,
+                "rank_proxy": float(team_row.get("group_points", 0.0)),
+            })
+
+        home_score = int(match.get("home_score") or 0)
+        away_score = int(match.get("away_score") or 0)
+        winner = match.get("winner")
+        for team, goals_for, goals_against in ((home, home_score, away_score), (away, away_score, home_score)):
+            if not team:
+                continue
+            team_state = state[team]
+            team_state["games"] += 1
+            team_state["goals_for_roll"] += goals_for
+            team_state["goals_against_roll"] += goals_against
+            team_state["points_roll"] += 3.0 if winner == team else (1.0 if home_score == away_score else 0.0)
+            team_state["minutes_roll"] += 90.0
+            team_state["last_date"] = match["date"]
+            team_state["recent_results"].append("W" if winner == team else ("D" if home_score == away_score else "L"))
+
+    return pd.DataFrame(rows)
+
+
+def build_football_pairwise_features(
+    home_team: str,
+    away_team: str,
+    teams_df: pd.DataFrame,
+    players_df: pd.DataFrame,
+    context: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Construct leakage-safe pairwise football features for a single matchup."""
+    context = context or {}
+    home = _team_row_from_teams_df(teams_df, home_team)
+    away = _team_row_from_teams_df(teams_df, away_team)
+    player_agg = _player_team_frame(players_df)
+
+    def get_player_metric(team: str, key: str) -> float:
+        if team in player_agg.index and key in player_agg.columns:
+            return float(player_agg.loc[team, key])
+        return 0.0
+
+    home_minutes = get_player_metric(home_team, "player_minutes")
+    away_minutes = get_player_metric(away_team, "player_minutes")
+    home_top3 = get_player_metric(home_team, "top3_player_share")
+    away_top3 = get_player_metric(away_team, "top3_player_share")
+
+    def recent_goal_diff(row: dict[str, Any]) -> float:
+        goals_for = float(row.get("goals_for", 0.0))
+        goals_against = float(row.get("goals_against", 0.0))
+        played = max(1.0, float(row.get("matches_played", 1.0)))
+        return (goals_for - goals_against) / played
+
+    def rest_days(row: dict[str, Any]) -> float:
+        last_date = context.get(f"{row.get('name', '')}_last_date")
+        if last_date is None:
+            return float(context.get("rest_days_default", 7.0))
+        match_date = pd.Timestamp(context.get("match_date")) if context.get("match_date") else pd.Timestamp.today()
+        return float(max(0.0, (match_date - pd.Timestamp(last_date)).days))
+
+    features = {
+        "attack_diff": float(home.get("shots_on_target_per_match", 0.0) - away.get("shots_on_target_per_match", 0.0)),
+        "defense_diff": float(home.get("clean_sheets", 0.0) - away.get("clean_sheets", 0.0)),
+        "player_impact_diff": float(get_player_metric(home_team, "player_rating") - get_player_metric(away_team, "player_rating")),
+        "discipline_diff": float((away.get("yellow_cards", 0.0) + away.get("red_cards", 0.0)) -
+                                 (home.get("yellow_cards", 0.0) + home.get("red_cards", 0.0))),
+        "form_diff": float(home.get("group_points", 0.0) - away.get("group_points", 0.0)),
+        "rank_diff": float(home.get("overall", home.get("group_points", 0.0)) - away.get("overall", away.get("group_points", 0.0))),
+        "rest_days_diff": float(rest_days(home) - rest_days(away)),
+        "cumulative_minutes_diff": float(home_minutes - away_minutes),
+        "top3_player_share_diff": float(home_top3 - away_top3),
+        "recent_goal_diff_diff": float(recent_goal_diff(home) - recent_goal_diff(away)),
+    }
+    return features
+
+
+def build_stock_feature_frame(
+    stock_df: pd.DataFrame,
+    football_events_df: pd.DataFrame,
+    sponsor_meta: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """Merge stock history with football event channels on trading days."""
+    if stock_df.empty:
+        return pd.DataFrame()
+
+    df = stock_df.copy()
+    df = df.sort_index()
+    if "close" not in df.columns:
+        raise ValueError("stock_df must contain a 'close' column")
+
+    sponsor_meta = sponsor_meta or {}
+    exposure = float(sponsor_meta.get("exposure_score", 0.5))
+    region = str(sponsor_meta.get("region", "")).lower()
+
+    df["return"] = df["close"].pct_change()
+    df["lag1_return"] = df["return"].shift(1)
+    df["lag2_return"] = df["return"].shift(2)
+    df["lag3_return"] = df["return"].shift(3)
+    df["ma_gap_3"] = df["close"].rolling(3).mean() / df["close"] - 1.0
+    df["ma_gap_5"] = df["close"].rolling(5).mean() / df["close"] - 1.0
+    df["rolling_vol_5"] = df["return"].rolling(5).std()
+    df["rolling_vol_10"] = df["return"].rolling(10).std()
+    df["momentum_3"] = df["close"].pct_change(3)
+    df["momentum_5"] = df["close"].pct_change(5)
+    df["trend_since_start"] = df["close"] / df["close"].iloc[0] - 1.0
+
+    events = football_events_df.copy()
+    if not events.empty:
+        events["date"] = pd.to_datetime(events["date"]).dt.normalize()
+        events = events.set_index("date").sort_index()
+        event_cols = [
+            "exposure_score", "match_day_intensity", "upset_score", "alive_relevance",
+            "event_decay_3", "event_decay_5", "same_day_event", "lag1_event",
+            "lag2_event", "region_relevance", "cum_stage_intensity",
+        ]
+        for col in event_cols:
+            if col not in events.columns:
+                events[col] = 0.0
+        aligned = events.reindex(df.index, method=None).fillna(0.0)
+        for col in event_cols:
+            df[col] = aligned[col].astype(float)
+    else:
+        for col in [
+            "exposure_score", "match_day_intensity", "upset_score", "alive_relevance",
+            "event_decay_3", "event_decay_5", "same_day_event", "lag1_event",
+            "lag2_event", "region_relevance", "cum_stage_intensity",
+        ]:
+            df[col] = 0.0
+
+    df["exposure_score"] = df["exposure_score"].fillna(exposure if exposure else 0.5)
+    df["region_relevance"] = df["region_relevance"].fillna(1.0 if region else 0.5)
+    df["feature_target"] = df["return"].shift(-1)
+    return df

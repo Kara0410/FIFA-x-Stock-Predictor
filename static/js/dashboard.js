@@ -11,6 +11,13 @@ const ROUND_LABELS = { R32: "Round of 32", R16: "Round of 16", QF: "Quarter-fina
 let BRACKET = null;            // cached /api/bracket payload
 let MATCH_BY_ID = {};
 let CURRENT_TICKER = null;
+let BRACKET_RESIZE_OBSERVER = null;
+let MODEL_DEFAULTS = null;
+let LAST_CONFIG = null;
+let ACTIVE_CONFIG = null;
+let SPONSOR_LIST = [];
+let PREDICTION_PROGRESS_TIMER = null;
+let PREDICTION_PROGRESS_VALUE = 0;
 
 /* ---------------- helpers ---------------- */
 async function fetchJSON(url) {
@@ -21,6 +28,265 @@ async function fetchJSON(url) {
 const pct = (x, d = 0) => (x * 100).toFixed(d) + "%";
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const shortDate = (iso) => new Date(iso + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function modelMeta(section, name) {
+  return MODEL_DEFAULTS?.[section]?.[name] || null;
+}
+
+function defaultConfig() {
+  if (!MODEL_DEFAULTS) return null;
+  return {
+    football: { model: "baseline_poisson_blend", params: deepClone(MODEL_DEFAULTS.football.baseline_poisson_blend.defaults) },
+    stock: { model: "baseline_gbr", params: deepClone(MODEL_DEFAULTS.stock.baseline_gbr.defaults) },
+    stock_ticker: "KO",
+    persist: true,
+  };
+}
+
+function mergeConfig(base, override) {
+  const out = deepClone(base);
+  if (!override) return out;
+  if (override.football) {
+    out.football.model = override.football.model || out.football.model;
+    out.football.params = { ...out.football.params, ...(override.football.params || {}) };
+  }
+  if (override.stock) {
+    out.stock.model = override.stock.model || out.stock.model;
+    out.stock.params = { ...out.stock.params, ...(override.stock.params || {}) };
+  }
+  if (override.stock_ticker) out.stock_ticker = override.stock_ticker;
+  if (typeof override.persist === "boolean") out.persist = override.persist;
+  return out;
+}
+
+function setSelectOptions(el, items, valueKey = "value", labelKey = "label") {
+  el.innerHTML = items.map((item) => `<option value="${esc(item[valueKey])}">${esc(item[labelKey])}</option>`).join("");
+}
+
+function formatValueForInput(control, value) {
+  if (control.type === "toggle") return Boolean(value);
+  if (control.type === "select" || control.type === "text") return value ?? "";
+  if (control.type === "number" || control.type === "slider") return value ?? "";
+  return value ?? "";
+}
+
+function parseControlValue(control, el) {
+  if (control.type === "toggle") return el.checked;
+  if (control.type === "number" || control.type === "slider") {
+    if (el.value === "" && control.allow_null) return null;
+    return Number(el.value);
+  }
+  if (control.type === "text") {
+    const raw = el.value.trim();
+    if (!raw) return "";
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return el.value;
+}
+
+function renderModelParams(section, modelName, params) {
+  const meta = modelMeta(section, modelName);
+  const target = document.getElementById(section === "football" ? "football-params" : "stock-params");
+  if (!meta || !target) return;
+  const controls = meta.controls || {};
+  const html = Object.entries(controls).map(([key, control]) => {
+    const value = params?.[key] ?? meta.defaults?.[key];
+    const normalized = formatValueForInput(control, value);
+    const id = `${section}-${key}`;
+    if (control.type === "slider") {
+      return `<div class="param-field">
+        <label for="${id}">${esc(control.label || key)}</label>
+        <input id="${id}" data-section="${section}" data-key="${key}" data-control-type="${control.type}" type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${esc(normalized)}">
+        <div class="meta"><span class="value" data-value-for="${id}">${esc(normalized)}</span> ${meta.pros ? `&middot; ${esc(meta.pros)}` : ""}</div>
+      </div>`;
+    }
+    if (control.type === "number") {
+      return `<div class="param-field">
+        <label for="${id}">${esc(control.label || key)}</label>
+        <input id="${id}" data-section="${section}" data-key="${key}" data-control-type="${control.type}" type="number" min="${control.min}" max="${control.max}" step="${control.step}" value="${normalized === null ? "" : esc(normalized)}">
+        <div class="meta">${meta.cons ? esc(meta.cons) : ""}</div>
+      </div>`;
+    }
+    if (control.type === "select") {
+      const opts = (control.options || []).map((opt) => `<option value="${esc(opt)}"${opt === normalized ? " selected" : ""}>${esc(opt)}</option>`).join("");
+      return `<div class="param-field">
+        <label for="${id}">${esc(control.label || key)}</label>
+        <select id="${id}" data-section="${section}" data-key="${key}" data-control-type="${control.type}">${opts}</select>
+        <div class="meta">${meta.pros ? esc(meta.pros) : ""}</div>
+      </div>`;
+    }
+    if (control.type === "toggle") {
+      return `<div class="param-field">
+        <label for="${id}">${esc(control.label || key)}</label>
+        <div class="inline"><input id="${id}" data-section="${section}" data-key="${key}" data-control-type="${control.type}" type="checkbox"${normalized ? " checked" : ""}><span>${normalized ? "On" : "Off"}</span></div>
+        <div class="meta">${meta.cons ? esc(meta.cons) : ""}</div>
+      </div>`;
+    }
+    const placeholder = control.placeholder || "";
+    return `<div class="param-field">
+      <label for="${id}">${esc(control.label || key)}</label>
+      <input id="${id}" data-section="${section}" data-key="${key}" data-control-type="${control.type}" type="text" value="${esc(normalized)}" placeholder="${esc(placeholder)}">
+      <div class="meta">${meta.pros ? esc(meta.pros) : ""}</div>
+    </div>`;
+  }).join("");
+  target.innerHTML = html;
+
+  target.querySelectorAll("[data-control-type='slider']").forEach((input) => {
+    input.addEventListener("input", () => {
+      const valueEl = target.querySelector(`[data-value-for="${input.id}"]`);
+      if (valueEl) valueEl.textContent = input.value;
+    });
+  });
+}
+
+function applyConfigToControls(config) {
+  if (!MODEL_DEFAULTS || !config) return;
+  const footballSelect = document.getElementById("football-model-select");
+  const stockSelect = document.getElementById("stock-model-select");
+  const stockTickerSelect = document.getElementById("stock-select");
+  footballSelect.value = config.football.model;
+  stockSelect.value = config.stock.model;
+  if (stockTickerSelect) stockTickerSelect.value = config.stock_ticker;
+  renderModelParams("football", config.football.model, config.football.params);
+  renderModelParams("stock", config.stock.model, config.stock.params);
+  updateControlDescriptions();
+}
+
+function updateControlDescriptions() {
+  const footballMeta = modelMeta("football", document.getElementById("football-model-select")?.value);
+  const stockMeta = modelMeta("stock", document.getElementById("stock-model-select")?.value);
+  const footballEl = document.getElementById("football-model-description");
+  const stockEl = document.getElementById("stock-model-description");
+  if (footballEl && footballMeta) {
+    footballEl.textContent = `${footballMeta.description} Pro: ${footballMeta.pros} Con: ${footballMeta.cons}`;
+  }
+  if (stockEl && stockMeta) {
+    stockEl.textContent = `${stockMeta.description} Pro: ${stockMeta.pros} Con: ${stockMeta.cons}`;
+  }
+}
+
+function collectConfigFromUI() {
+  const footballModel = document.getElementById("football-model-select").value;
+  const stockModel = document.getElementById("stock-model-select").value;
+  const config = {
+    football: { model: footballModel, params: deepClone(modelMeta("football", footballModel).defaults) },
+    stock: { model: stockModel, params: deepClone(modelMeta("stock", stockModel).defaults) },
+    stock_ticker: document.getElementById("stock-select").value,
+    persist: true,
+  };
+  document.querySelectorAll("#football-params [data-control-type], #stock-params [data-control-type]").forEach((el) => {
+    const section = el.dataset.section;
+    const key = el.dataset.key;
+    const control = modelMeta(section, `${document.getElementById(`${section}-model-select`).value}`)?.controls?.[key];
+    if (!control) return;
+    const value = parseControlValue(control, el);
+    if (section === "football") config.football.params[key] = value;
+    else config.stock.params[key] = value;
+  });
+  return config;
+}
+
+function renderActiveModelChips(payload) {
+  const football = payload.football_model_info;
+  const stock = payload.stock_model_info;
+  document.getElementById("active-football-model").innerHTML = `Football model: <b>${esc(football.model_label)}</b> &middot; rows ${football.training_rows} &middot; features ${football.feature_count}`;
+  document.getElementById("active-stock-model").innerHTML = `Stock model: <b>${esc(stock.model_label)}</b> &middot; rows ${stock.training_rows} &middot; features ${stock.feature_count}`;
+}
+
+async function postRecalculate(config) {
+  const res = await fetch("/api/recalculate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) throw new Error(`POST /api/recalculate -> HTTP ${res.status}`);
+  return res.json();
+}
+
+function persistUiState(config) {
+  try {
+    localStorage.setItem("fifa_dashboard_model_config", JSON.stringify(config));
+  } catch {
+    /* ignore */
+  }
+}
+
+function readUiState() {
+  try {
+    const raw = localStorage.getItem("fifa_dashboard_model_config");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setPredictionProgress(value, label) {
+  const panel = document.getElementById("prediction-progress");
+  const fill = document.getElementById("prediction-progress-fill");
+  const pct = document.getElementById("prediction-progress-pct");
+  const text = document.getElementById("prediction-progress-label");
+  if (!panel || !fill || !pct || !text) return;
+  const clamped = Math.max(0, Math.min(100, value));
+  PREDICTION_PROGRESS_VALUE = clamped;
+  panel.classList.remove("hidden");
+  panel.classList.add("active");
+  fill.style.width = `${clamped}%`;
+  pct.textContent = `${Math.round(clamped)}%`;
+  if (label) text.textContent = label;
+}
+
+function startPredictionProgress() {
+  stopPredictionProgress();
+  setPredictionProgress(8, "Starting model selection…");
+  const stages = [
+    [18, "Loading or training football model…"],
+    [42, "Running bracket simulation…"],
+    [68, "Loading or training stock model…"],
+    [86, "Preparing forecast output…"],
+  ];
+  let idx = 0;
+  PREDICTION_PROGRESS_TIMER = setInterval(() => {
+    const next = stages[idx];
+    if (next && PREDICTION_PROGRESS_VALUE < next[0]) {
+      setPredictionProgress(next[0], next[1]);
+      idx += 1;
+      return;
+    }
+    if (PREDICTION_PROGRESS_VALUE < 96) {
+      setPredictionProgress(PREDICTION_PROGRESS_VALUE + 2, next ? next[1] : "Finalizing…");
+    }
+  }, 260);
+}
+
+function stopPredictionProgress(success = true) {
+  if (PREDICTION_PROGRESS_TIMER) {
+    clearInterval(PREDICTION_PROGRESS_TIMER);
+    PREDICTION_PROGRESS_TIMER = null;
+  }
+  if (success) {
+    setPredictionProgress(100, "Dashboard refreshed.");
+    setTimeout(() => {
+      const panel = document.getElementById("prediction-progress");
+      if (panel) panel.classList.add("hidden");
+      if (document.getElementById("prediction-progress-fill")) {
+        document.getElementById("prediction-progress-fill").style.width = "12%";
+      }
+      PREDICTION_PROGRESS_VALUE = 0;
+    }, 600);
+  } else {
+    const panel = document.getElementById("prediction-progress");
+    if (panel) panel.classList.add("hidden");
+    PREDICTION_PROGRESS_VALUE = 0;
+  }
+}
 
 /* ============================================================
    BRACKET
@@ -34,6 +300,23 @@ async function loadBracket() {
   renderTitleTable();
 }
 
+function applyDashboardPayload(payload) {
+  BRACKET = payload.bracket;
+  MATCH_BY_ID = {};
+  BRACKET.matches.forEach((m) => (MATCH_BY_ID[m.id] = m));
+  ACTIVE_CONFIG = payload.current_config || ACTIVE_CONFIG;
+  CURRENT_TICKER = ACTIVE_CONFIG?.stock_ticker || CURRENT_TICKER;
+  renderHeroChips();
+  renderBracket();
+  renderTitleTable();
+  renderActiveModelChips(payload);
+  if (ACTIVE_CONFIG?.stock_ticker) {
+    const select = document.getElementById("stock-select");
+    if (select && select.value !== ACTIVE_CONFIG.stock_ticker) select.value = ACTIVE_CONFIG.stock_ticker;
+  }
+  renderStockFromPayload(payload.stock);
+}
+
 function renderHeroChips() {
   const done = BRACKET.matches.filter((m) => m.status === "completed").length;
   const total = BRACKET.matches.length;
@@ -43,7 +326,7 @@ function renderHeroChips() {
     <span class="chip">Knockout matches: <b>${done}/${total}</b> played</span>
     <span class="chip">Simulations: <b>${BRACKET.n_simulations.toLocaleString()}</b></span>
     <span class="chip">Projected champion: <b><span class="flag">${champFlag}</span>${esc(champ || "TBD")}</b></span>
-    <span class="chip">Sample tournament data &middot; as of 2026-07-04</span>`;
+    <span class="chip">Verified completed results &middot; as of 2026-07-04</span>`;
 }
 
 function flagOf(teamName) {
@@ -95,21 +378,36 @@ function renderBracket() {
   const leftLevels = levelsBelow(final.home_from);   // [SF],[QF,QF],[R16 x4],[R32 x8]
   const rightLevels = levelsBelow(final.away_from);
 
-  const col = (title, ids, side) =>
-    `<div class="bracket-col branch-${side}"><div class="col-title">${title}</div>` +
-    ids.map((id) => matchCardHTML(MATCH_BY_ID[id])).join("") +
-    `</div>`;
+  // A standard 32-team bracket has sixteen vertical leaf slots. Later-round
+  // cards sit exactly halfway between their two feeder cards.
+  const slotsFor = (count) => ({
+    1: [8],
+    2: [4, 12],
+    4: [2, 6, 10, 14],
+    8: [1, 3, 5, 7, 9, 11, 13, 15],
+  }[count]);
 
-  const titles = ["Semi-final", "Quarter-finals", "Round of 16", "Round of 32"];
-  const leftCols = [3, 2, 1, 0].map((i) => col(titles[i], leftLevels[i], "left"));
-  const rightCols = [0, 1, 2, 3].map((i) => col(titles[i], rightLevels[i], "right"));
+  const column = (title, ids, gridColumn) => {
+    const slots = slotsFor(ids.length);
+    return `<div class="col-title" style="grid-column:${gridColumn}">${title}</div>` +
+      ids.map((id, index) =>
+        matchCardHTML(MATCH_BY_ID[id], gridColumn, slots[index])).join("");
+  };
 
-  const champHTML = championCardHTML(final);
-  const finalCol =
-    `<div class="bracket-col"><div class="col-title">Final &middot; Jul 19</div>` +
-    matchCardHTML(final) + champHTML + `</div>`;
-
-  el.innerHTML = leftCols.join("") + finalCol + rightCols.join("");
+  el.innerHTML = `
+    <svg class="bracket-connectors" aria-hidden="true"></svg>
+    ${column("Round of 32", leftLevels[3], 1)}
+    ${column("Round of 16", leftLevels[2], 2)}
+    ${column("Quarter-finals", leftLevels[1], 3)}
+    ${column("Semi-finals", leftLevels[0], 4)}
+    <div class="col-title final-title" style="grid-column:5">Final &middot; ${shortDate(final.date)}</div>
+    ${matchCardHTML(final, 5, 8)}
+    ${championCardHTML(final)}
+    ${column("Semi-finals", rightLevels[0], 6)}
+    ${column("Quarter-finals", rightLevels[1], 7)}
+    ${column("Round of 16", rightLevels[2], 8)}
+    ${column("Round of 32", rightLevels[3], 9)}
+  `;
 
   el.querySelectorAll(".match-card").forEach((card) => {
     card.addEventListener("click", () => openMatchModal(card.dataset.mid));
@@ -120,18 +418,77 @@ function renderBracket() {
       }
     });
   });
+
+  requestAnimationFrame(drawBracketConnectors);
+  if (BRACKET_RESIZE_OBSERVER) BRACKET_RESIZE_OBSERVER.disconnect();
+  if (window.ResizeObserver) {
+    BRACKET_RESIZE_OBSERVER = new ResizeObserver(drawBracketConnectors);
+    BRACKET_RESIZE_OBSERVER.observe(el);
+  }
+}
+
+function drawBracketConnectors() {
+  const bracket = document.getElementById("bracket");
+  const svg = bracket.querySelector(".bracket-connectors");
+  if (!svg) return;
+
+  const bracketRect = bracket.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${bracketRect.width} ${bracketRect.height}`);
+  svg.replaceChildren();
+
+  const addPath = (source, target, isChampionPath = false) => {
+    if (!source || !target) return;
+    const sourceRect = source.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const flowsRight = sourceRect.left < targetRect.left;
+    const startX = (flowsRight ? sourceRect.right : sourceRect.left) - bracketRect.left;
+    const endX = (flowsRight ? targetRect.left : targetRect.right) - bracketRect.left;
+    const startY = sourceRect.top + sourceRect.height / 2 - bracketRect.top;
+    const endY = targetRect.top + targetRect.height / 2 - bracketRect.top;
+    const elbowX = (startX + endX) / 2;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${startX} ${startY} H ${elbowX} V ${endY} H ${endX}`);
+    path.setAttribute("class", isChampionPath ? "connector on-path" : "connector");
+    svg.appendChild(path);
+  };
+
+  BRACKET.matches.forEach((match) => {
+    if (!match.home_from || !match.away_from) return;
+    const target = bracket.querySelector(`[data-mid="${match.id}"]`);
+    [match.home_from, match.away_from].forEach((sourceId) => {
+      const source = bracket.querySelector(`[data-mid="${sourceId}"]`);
+      const onPath = source?.classList.contains("on-path") &&
+        target?.classList.contains("on-path");
+      addPath(source, target, onPath);
+    });
+  });
+
+  const final = BRACKET.matches.find((match) => match.round === "F");
+  const finalCard = bracket.querySelector(`[data-mid="${final.id}"]`);
+  const winnerCard = bracket.querySelector("#winner-card");
+  if (finalCard && winnerCard) {
+    const finalRect = finalCard.getBoundingClientRect();
+    const winnerRect = winnerCard.getBoundingClientRect();
+    const x = finalRect.left + finalRect.width / 2 - bracketRect.left;
+    const startY = finalRect.bottom - bracketRect.top;
+    const endY = winnerRect.top - bracketRect.top;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${x} ${startY} V ${endY}`);
+    path.setAttribute("class", "connector winner-connector on-path");
+    svg.appendChild(path);
+  }
 }
 
 function championCardHTML(final) {
   if (final.status === "completed" && final.winner) {
-    return `<div class="champ-card"><div class="crown">&#127942;</div>
+    return `<div class="champ-card" id="winner-card"><div class="crown">&#127942;</div>
       <div class="name">${flagOf(final.winner)} ${esc(final.winner)}</div>
       <div class="lbl">World Champion</div></div>`;
   }
   const champ = BRACKET.predicted_champion;
   const row = BRACKET.title_ranking.find((t) => t.team === champ);
   const p = row ? pct(row.p_champion, 1) : "&mdash;";
-  return `<div class="champ-card"><div class="crown">&#128081;</div>
+  return `<div class="champ-card" id="winner-card"><div class="crown">&#128081;</div>
     <div class="name">${champ ? flagOf(champ) : ""} ${esc(champ || "TBD")}</div>
     <div class="lbl">Projected champion</div><div class="pct">${p} title probability</div></div>`;
 }
@@ -143,7 +500,7 @@ function teamRowHTML(team, right, cls) {
     <span class="val">${right}</span></div>`;
 }
 
-function matchCardHTML(m) {
+function matchCardHTML(m, gridColumn, slot) {
   const path = m.on_predicted_path ? " on-path" : "";
   let body = "";
 
@@ -171,7 +528,7 @@ function matchCardHTML(m) {
     body += `<div class="conf-note">most likely participants</div>`;
   }
 
-  return `<div class="match-card${path}" data-mid="${m.id}" role="button" tabindex="0"
+  return `<div class="match-card${path}" style="grid-column:${gridColumn};grid-row:${slot + 2}" data-mid="${m.id}" role="button" tabindex="0"
     aria-label="${ROUND_LABELS[m.round]} match ${esc(m.id)} details">
     <div class="meta"><span>${m.id} &middot; ${ROUND_LABELS[m.round]}</span><span>${shortDate(m.date)}</span></div>
     ${body}</div>`;
@@ -291,12 +648,17 @@ window.openTeamModal = openTeamModal;
    ============================================================ */
 async function loadSponsors() {
   const data = await fetchJSON("/api/stocks");
+  SPONSOR_LIST = data.sponsors;
   const sel = document.getElementById("stock-select");
   sel.innerHTML = data.sponsors
     .map((s) => `<option value="${esc(s.ticker)}">${esc(s.name)} (${esc(s.ticker)})</option>`)
     .join("");
   sel.addEventListener("change", () => loadStock(sel.value));
-  if (data.sponsors.length) loadStock(data.sponsors[0].ticker);
+  const selected = ACTIVE_CONFIG?.stock_ticker || data.sponsors[0]?.ticker;
+  if (selected) {
+    sel.value = selected;
+    if (!BRACKET) await loadStock(selected);
+  }
 }
 
 async function loadStock(ticker) {
@@ -314,8 +676,17 @@ async function loadStock(ticker) {
   }
   if (CURRENT_TICKER !== ticker) return;   // user switched meanwhile
 
+  renderStockFromPayload(d);
+}
+
+function renderStockFromPayload(d) {
   renderStockChips(d);
   renderStockChart(d);
+  const model = d.model_info || {};
+  const chip = document.getElementById("active-stock-model");
+  if (chip && model.model_label) {
+    chip.innerHTML = `Stock model: <b>${esc(model.model_label)}</b> &middot; rows ${model.training_rows} &middot; features ${model.feature_count}`;
+  }
 }
 
 function renderStockChips(d) {
@@ -395,29 +766,88 @@ function renderSVGFallback(el, h, fDates, fPred, fLow, fUp) {
 /* ============================================================
    RECALCULATE + INIT
    ============================================================ */
-document.getElementById("btn-recalc").addEventListener("click", async (e) => {
-  const btn = e.currentTarget;
-  btn.disabled = true; btn.textContent = "Recalculating…";
-  try {
-    await fetchJSON("/api/recalculate");
-    await loadBracket();
-    if (CURRENT_TICKER) await loadStock(CURRENT_TICKER);
-  } finally {
-    btn.disabled = false; btn.innerHTML = "&#8635; Recalculate";
+async function refreshDashboard(config, button) {
+  const btn = button || document.getElementById("btn-predict");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Predicting…";
   }
-});
+  startPredictionProgress();
+  try {
+    const payload = await postRecalculate(config);
+    applyDashboardPayload(payload);
+    persistUiState(config);
+    stopPredictionProgress(true);
+    return payload;
+  } catch (err) {
+    stopPredictionProgress(false);
+    throw err;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.id === "btn-predict" ? "Predict" : "&#8635; Recalculate";
+      if (btn.id === "btn-recalc") btn.innerHTML = "&#8635; Recalculate";
+    }
+  }
+}
+
+function wireControls() {
+  document.getElementById("football-model-select").addEventListener("change", () => {
+    const current = collectConfigFromUI();
+    renderModelParams("football", current.football.model, current.football.params);
+    updateControlDescriptions();
+  });
+  document.getElementById("stock-model-select").addEventListener("change", () => {
+    const current = collectConfigFromUI();
+    renderModelParams("stock", current.stock.model, current.stock.params);
+    updateControlDescriptions();
+  });
+  document.getElementById("stock-select").addEventListener("change", (e) => {
+    CURRENT_TICKER = e.currentTarget.value;
+    if (ACTIVE_CONFIG) ACTIVE_CONFIG.stock_ticker = CURRENT_TICKER;
+    loadStock(CURRENT_TICKER);
+  });
+  document.getElementById("btn-predict").addEventListener("click", async () => {
+    await refreshDashboard(collectConfigFromUI(), document.getElementById("btn-predict"));
+  });
+  document.getElementById("btn-reset-defaults").addEventListener("click", async () => {
+    const config = defaultConfig();
+    ACTIVE_CONFIG = config;
+    applyConfigToControls(config);
+    await refreshDashboard(config, document.getElementById("btn-predict"));
+  });
+  document.getElementById("btn-recalc").addEventListener("click", async (e) => {
+    await refreshDashboard(collectConfigFromUI(), e.currentTarget);
+  });
+}
+
+async function initControlsAndDashboard() {
+  const [defaults, lastConfig, sponsorsResp] = await Promise.all([
+    fetchJSON("/api/model_defaults"),
+    fetchJSON("/api/last_config"),
+    fetchJSON("/api/stocks"),
+  ]);
+  MODEL_DEFAULTS = defaults;
+  LAST_CONFIG = mergeConfig(defaultConfig(), lastConfig);
+  ACTIVE_CONFIG = LAST_CONFIG || defaultConfig();
+  setSelectOptions(document.getElementById("football-model-select"), Object.keys(MODEL_DEFAULTS.football).map((name) => ({ value: name, label: `${MODEL_DEFAULTS.football[name].label}` })));
+  setSelectOptions(document.getElementById("stock-model-select"), Object.keys(MODEL_DEFAULTS.stock).map((name) => ({ value: name, label: `${MODEL_DEFAULTS.stock[name].label}` })));
+  SPONSOR_LIST = sponsorsResp.sponsors || [];
+  const sponsorSelect = document.getElementById("stock-select");
+  sponsorSelect.innerHTML = SPONSOR_LIST.map((s) => `<option value="${esc(s.ticker)}">${esc(s.name)} (${esc(s.ticker)})</option>`).join("");
+  sponsorSelect.value = ACTIVE_CONFIG.stock_ticker;
+  applyConfigToControls(ACTIVE_CONFIG);
+  wireControls();
+  await refreshDashboard(ACTIVE_CONFIG, document.getElementById("btn-predict"));
+}
 
 (async function init() {
   try {
-    await loadBracket();
+    await initControlsAndDashboard();
   } catch (err) {
     document.getElementById("bracket").innerHTML =
-      `<p style="color:var(--red)">Failed to load bracket: ${esc(err.message)}</p>`;
-  }
-  try {
-    await loadSponsors();
-  } catch (err) {
+      `<p style="color:var(--red)">Failed to load dashboard: ${esc(err.message)}</p>`;
     document.getElementById("stock-chart").innerHTML =
-      `<div class="loading">Failed to load sponsors: ${esc(err.message)}</div>`;
+      `<div class="loading">Failed to load dashboard: ${esc(err.message)}</div>`;
   }
 })();

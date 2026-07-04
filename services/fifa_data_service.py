@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_DIR = PROJECT_ROOT / "data" / "sample"
 
@@ -55,6 +57,18 @@ class FifaDataService:
 
     def get_matches(self) -> list[dict]:
         return self.get_matches_doc()["matches"]
+
+    def get_teams_df(self) -> pd.DataFrame:
+        return pd.DataFrame.from_dict(self.get_teams(), orient="index").reset_index(names="team")
+
+    def get_players_df(self) -> pd.DataFrame:
+        return pd.DataFrame(self.get_players())
+
+    def get_matches_df(self) -> pd.DataFrame:
+        frame = pd.DataFrame(self.get_matches())
+        if not frame.empty and "date" in frame.columns:
+            frame["date"] = pd.to_datetime(frame["date"]).dt.normalize()
+        return frame
 
     def team_meta(self, name: str) -> dict | None:
         return self.get_teams().get(name)
