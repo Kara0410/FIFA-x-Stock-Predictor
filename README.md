@@ -19,7 +19,6 @@ No Docker, no Streamlit, no cloud — Flask + vanilla HTML/CSS/JS on localhost.
 Requires **Python 3.11+**.
 
 ```bash
-cd fifa_2026_ai_knockout_stock_dashboard
 pip install -r requirements.txt
 python app.py
 ```

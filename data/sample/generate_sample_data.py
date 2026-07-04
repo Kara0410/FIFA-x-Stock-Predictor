@@ -7,9 +7,9 @@ Produces three deterministic JSON files in this directory:
   players.json  - key player statistics per team
   matches.json  - full knockout bracket (R32 completed, R16 upcoming, later TBD)
 
-The output format is the "contract" the rest of the app consumes. To plug in
-real FIFA 2026 data later, replace these files (or point FifaDataService at a
-real API) while keeping the same keys.
+Completed knockout fixtures below are real tournament results. Team and player
+performance fields remain deterministic estimates until a statistics provider
+is connected.
 
 Run:  python generate_sample_data.py
 """
@@ -91,63 +91,104 @@ TEAMS = {
                      "players": [("Adalberto Carrasquilla", "MF"), ("Ismael Díaz", "FW"), ("Michael Murillo", "DF")]},
 }
 
+# Keep only the actual 32 teams that reached the knockout stage. Most entries
+# above also provide the player metadata used by the demo; the eight teams not
+# present in the original sample are added here.
+ACTUAL_GROUPS = {
+    "Mexico": "A", "South Africa": "A",
+    "Switzerland": "B", "Canada": "B", "Bosnia and Herzegovina": "B",
+    "Brazil": "C", "Morocco": "C",
+    "USA": "D", "Australia": "D", "Paraguay": "D",
+    "Germany": "E", "Ivory Coast": "E", "Ecuador": "E",
+    "Netherlands": "F", "Japan": "F", "Sweden": "F",
+    "Belgium": "G", "Egypt": "G",
+    "Spain": "H", "Cape Verde": "H",
+    "France": "I", "Norway": "I", "Senegal": "I",
+    "Argentina": "J", "Algeria": "J", "Austria": "J",
+    "Colombia": "K", "Portugal": "K", "DR Congo": "K",
+    "England": "L", "Croatia": "L", "Ghana": "L",
+}
+
+ADDITIONAL_TEAMS = {
+    "South Africa": {"code": "RSA", "flag": "🇿🇦", "tier": 70,
+                     "players": [("Lyle Foster", "FW"), ("Teboho Mokoena", "MF"), ("Ronwen Williams", "GK")]},
+    "Bosnia and Herzegovina": {"code": "BIH", "flag": "🇧🇦", "tier": 69,
+                               "players": [("Edin Džeko", "FW"), ("Ermedin Demirović", "FW"), ("Sead Kolašinac", "DF")]},
+    "Paraguay": {"code": "PAR", "flag": "🇵🇾", "tier": 74,
+                 "players": [("Julio Enciso", "FW"), ("Miguel Almirón", "MF"), ("Gustavo Gómez", "DF")]},
+    "Ivory Coast": {"code": "CIV", "flag": "🇨🇮", "tier": 76,
+                    "players": [("Amad Diallo", "FW"), ("Franck Kessié", "MF"), ("Yahia Fofana", "GK")]},
+    "Sweden": {"code": "SWE", "flag": "🇸🇪", "tier": 77,
+               "players": [("Alexander Isak", "FW"), ("Viktor Gyökeres", "FW"), ("Anthony Elanga", "FW")]},
+    "Cape Verde": {"code": "CPV", "flag": "🇨🇻", "tier": 68,
+                   "players": [("Ryan Mendes", "FW"), ("Deroy Duarte", "MF"), ("Vozinha", "GK")]},
+    "DR Congo": {"code": "COD", "flag": "🇨🇩", "tier": 72,
+                 "players": [("Yoane Wissa", "FW"), ("Cédric Bakambu", "FW"), ("Chancel Mbemba", "DF")]},
+    "Ghana": {"code": "GHA", "flag": "🇬🇭", "tier": 73,
+              "players": [("Mohammed Kudus", "MF"), ("Antoine Semenyo", "FW"), ("Thomas Partey", "MF")]},
+}
+
+TEAMS.update(ADDITIONAL_TEAMS)
+TEAMS = {name: meta for name, meta in TEAMS.items() if name in ACTUAL_GROUPS}
+for name, group in ACTUAL_GROUPS.items():
+    TEAMS[name]["group"] = group
+
 # ---------------------------------------------------------------------------
 # Knockout bracket.
-# R32 matches are completed (scores below). R16 is scheduled; QF/SF/F are TBD
+# R32 matches are completed (verified results). R16 is scheduled; QF/SF/F are TBD
 # and reference the matches that feed them.
 # Format R32: (id, home, away, (hs, as), (pen_h, pen_a) or None, date, venue)
 # ---------------------------------------------------------------------------
 R32_RESULTS = [
-    ("M1",  "Argentina",   "Panama",       (3, 1), None,   "2026-06-28", "MetLife Stadium, New York/New Jersey"),
-    ("M2",  "Netherlands", "South Korea",  (2, 0), None,   "2026-06-28", "BC Place, Vancouver"),
-    ("M3",  "Spain",       "Egypt",        (2, 0), None,   "2026-06-29", "Lincoln Financial Field, Philadelphia"),
-    ("M4",  "Portugal",    "Switzerland",  (1, 0), None,   "2026-06-29", "Gillette Stadium, Boston"),
-    ("M5",  "France",      "Saudi Arabia", (4, 1), None,   "2026-06-30", "NRG Stadium, Houston"),
-    ("M6",  "Germany",     "Croatia",      (2, 2), (5, 4), "2026-06-30", "AT&T Stadium, Dallas"),
-    ("M7",  "England",     "Ecuador",      (2, 0), None,   "2026-07-01", "Mercedes-Benz Stadium, Atlanta"),
-    ("M8",  "Brazil",      "Algeria",      (3, 0), None,   "2026-07-01", "Hard Rock Stadium, Miami"),
-    ("M9",  "USA",         "Norway",       (1, 0), None,   "2026-06-28", "SoFi Stadium, Los Angeles"),
-    ("M10", "Morocco",     "Belgium",      (1, 0), None,   "2026-06-29", "Levi's Stadium, San Francisco Bay Area"),
-    ("M11", "Uruguay",     "Japan",        (2, 1), None,   "2026-06-30", "Estadio BBVA, Monterrey"),
-    ("M12", "Colombia",    "Senegal",      (1, 1), (4, 2), "2026-07-01", "Estadio Akron, Guadalajara"),
-    ("M13", "Mexico",      "Austria",      (2, 1), None,   "2026-07-02", "Estadio Azteca, Mexico City"),
-    ("M14", "Italy",       "Australia",    (1, 0), None,   "2026-07-02", "BMO Field, Toronto"),
-    ("M15", "Denmark",     "Canada",       (2, 0), None,   "2026-07-03", "Lumen Field, Seattle"),
-    ("M16", "Iran",        "Qatar",        (2, 1), None,   "2026-07-03", "Arrowhead Stadium, Kansas City"),
+    ("M73", "South Africa", "Canada",                  (0, 1), None,   "2026-06-28", "SoFi Stadium, Los Angeles"),
+    ("M74", "Germany",      "Paraguay",                (1, 1), (3, 4), "2026-06-29", "Gillette Stadium, Boston"),
+    ("M75", "Netherlands",  "Morocco",                 (1, 1), (2, 3), "2026-06-29", "Estadio BBVA, Monterrey"),
+    ("M76", "Brazil",       "Japan",                   (2, 1), None,   "2026-06-29", "NRG Stadium, Houston"),
+    ("M77", "France",       "Sweden",                  (3, 0), None,   "2026-06-30", "MetLife Stadium, New York/New Jersey"),
+    ("M78", "Ivory Coast",  "Norway",                  (1, 2), None,   "2026-06-30", "AT&T Stadium, Dallas"),
+    ("M79", "Mexico",       "Ecuador",                 (2, 0), None,   "2026-07-01", "Estadio Azteca, Mexico City"),
+    ("M80", "England",      "DR Congo",                (2, 1), None,   "2026-07-01", "Mercedes-Benz Stadium, Atlanta"),
+    ("M81", "USA",          "Bosnia and Herzegovina",  (2, 0), None,   "2026-07-02", "Levi's Stadium, San Francisco Bay Area"),
+    ("M82", "Belgium",      "Senegal",                 (3, 2), None,   "2026-07-01", "Lumen Field, Seattle"),
+    ("M83", "Portugal",     "Croatia",                 (2, 1), None,   "2026-07-02", "BMO Field, Toronto"),
+    ("M84", "Spain",        "Austria",                 (3, 0), None,   "2026-07-02", "SoFi Stadium, Los Angeles"),
+    ("M85", "Switzerland",  "Algeria",                 (2, 0), None,   "2026-07-03", "BC Place, Vancouver"),
+    ("M86", "Argentina",    "Cape Verde",              (3, 2), None,   "2026-07-03", "Hard Rock Stadium, Miami"),
+    ("M87", "Colombia",     "Ghana",                   (1, 0), None,   "2026-07-03", "Arrowhead Stadium, Kansas City"),
+    ("M88", "Australia",    "Egypt",                   (1, 1), (2, 4), "2026-07-03", "AT&T Stadium, Dallas"),
 ]
 
 # (id, home_from, away_from, date, venue)
 R16_SCHEDULE = [
-    ("M17", "M1",  "M2",  "2026-07-04", "NRG Stadium, Houston"),
-    ("M18", "M3",  "M4",  "2026-07-04", "AT&T Stadium, Dallas"),
-    ("M19", "M5",  "M6",  "2026-07-05", "Mercedes-Benz Stadium, Atlanta"),
-    ("M20", "M7",  "M8",  "2026-07-05", "MetLife Stadium, New York/New Jersey"),
-    ("M21", "M9",  "M10", "2026-07-06", "SoFi Stadium, Los Angeles"),
-    ("M22", "M11", "M12", "2026-07-06", "Arrowhead Stadium, Kansas City"),
-    ("M23", "M13", "M14", "2026-07-07", "Estadio Azteca, Mexico City"),
-    ("M24", "M15", "M16", "2026-07-07", "Lumen Field, Seattle"),
+    ("M89", "M74", "M77", "2026-07-04", "Lincoln Financial Field, Philadelphia"),
+    ("M90", "M73", "M75", "2026-07-04", "NRG Stadium, Houston"),
+    ("M91", "M76", "M78", "2026-07-05", "MetLife Stadium, New York/New Jersey"),
+    ("M92", "M79", "M80", "2026-07-05", "Estadio Azteca, Mexico City"),
+    ("M93", "M83", "M84", "2026-07-06", "AT&T Stadium, Dallas"),
+    ("M94", "M81", "M82", "2026-07-06", "Lumen Field, Seattle"),
+    ("M95", "M86", "M88", "2026-07-07", "Mercedes-Benz Stadium, Atlanta"),
+    ("M96", "M85", "M87", "2026-07-07", "BC Place, Vancouver"),
 ]
 QF_SCHEDULE = [
-    ("M25", "M17", "M18", "2026-07-09", "Gillette Stadium, Boston"),
-    ("M26", "M19", "M20", "2026-07-10", "SoFi Stadium, Los Angeles"),
-    ("M27", "M21", "M22", "2026-07-11", "Hard Rock Stadium, Miami"),
-    ("M28", "M23", "M24", "2026-07-11", "Arrowhead Stadium, Kansas City"),
+    ("M97",  "M89", "M90", "2026-07-09", "Gillette Stadium, Boston"),
+    ("M98",  "M93", "M94", "2026-07-10", "SoFi Stadium, Los Angeles"),
+    ("M99",  "M91", "M92", "2026-07-11", "Hard Rock Stadium, Miami"),
+    ("M100", "M95", "M96", "2026-07-11", "Arrowhead Stadium, Kansas City"),
 ]
 SF_SCHEDULE = [
-    ("M29", "M25", "M26", "2026-07-14", "AT&T Stadium, Dallas"),
-    ("M30", "M27", "M28", "2026-07-15", "Mercedes-Benz Stadium, Atlanta"),
+    ("M101", "M97", "M98",  "2026-07-14", "AT&T Stadium, Dallas"),
+    ("M102", "M99", "M100", "2026-07-15", "Mercedes-Benz Stadium, Atlanta"),
 ]
 FINAL_SCHEDULE = [
-    ("M31", "M29", "M30", "2026-07-19", "MetLife Stadium, New York/New Jersey"),
+    ("M104", "M101", "M102", "2026-07-19", "MetLife Stadium, New York/New Jersey"),
 ]
 
 # Notable knockout surprises, used by the stock model as an "upset score"
 # signal (bigger = more global attention / market chatter).
 UPSETS = [
-    {"date": "2026-06-29", "description": "Morocco knock out Belgium 1-0", "magnitude": 0.80},
-    {"date": "2026-06-30", "description": "Germany-Croatia decided on penalties", "magnitude": 0.35},
-    {"date": "2026-07-01", "description": "Colombia-Senegal decided on penalties", "magnitude": 0.25},
-    {"date": "2026-07-03", "description": "Denmark eliminate co-host Canada", "magnitude": 0.45},
+    {"date": "2026-06-29", "description": "Paraguay eliminate Germany on penalties", "magnitude": 0.90},
+    {"date": "2026-06-29", "description": "Morocco eliminate the Netherlands on penalties", "magnitude": 0.75},
+    {"date": "2026-07-03", "description": "Egypt eliminate Australia on penalties", "magnitude": 0.50},
 ]
 
 
@@ -317,7 +358,9 @@ def build_matches():
         "rounds": ["R32", "R16", "QF", "SF", "F"],
         "matches": matches,
         "upsets": UPSETS,
-        "note": "SAMPLE DATA - deterministic synthetic tournament state as of 2026-07-04.",
+        "data_as_of": "2026-07-04T12:00:00Z",
+        "results_source": "https://www.fifa.com/en/articles/knockout-stage-match-schedule-bracket",
+        "note": "Completed results verified through the Round of 32; future matches are model predictions.",
     }
 
 
